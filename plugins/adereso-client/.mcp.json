@@ -2,8 +2,8 @@
   "mcpServers": {
     "adereso": {
       "type": "http",
-      "url": "https://adereso-mcp-936154468203.us-central1.run.app/mcp",
-      "oauth_resource": "https://adereso-mcp-936154468203.us-central1.run.app/mcp",
+      "url": "https://adereso-mcp-client-936154468203.us-central1.run.app/mcp",
+      "oauth_resource": "https://adereso-mcp-client-936154468203.us-central1.run.app/mcp",
       "oauth": {"client_id": "adereso-client-codex"},
       "default_tools_approval_mode": "auto",
       "tools": {

@@ -1,0 +1,26 @@
+name: Public repository safety
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  credential-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install audit parser
+        run: python3 -m pip install --requirement requirements-audit.txt
+
+      - name: Scan tracked files and Git history
+        run: python3 scripts/audit_public_repo.py --history
+
+      - name: Test credential detection rules
+        run: python3 -m unittest discover -s tests

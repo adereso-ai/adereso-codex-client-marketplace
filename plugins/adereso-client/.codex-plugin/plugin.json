@@ -16,7 +16,7 @@
     "developerName": "Adereso AI",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
-    "defaultPrompt": "Use $adereso-client for my authorized Desk tickets and Studio bots. Discover the workspace before choosing a ticket or bot, and use only the capabilities shown by the MCP.",
+    "defaultPrompt": ["Use $adereso-client to list my authorized Desk tickets and Studio bots. Start with adereso_list_workspaces."],
     "brandColor": "#166534"
   },
   "mcpServers": "./.mcp.json"

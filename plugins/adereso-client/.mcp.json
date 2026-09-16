@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "adereso": {
+      "type": "http",
+      "url": "https://mcp.adereso.ai/mcp",
+      "oauth_resource": "https://mcp.adereso.ai/mcp",
+      "oauth": {"client_id": "adereso-client-codex"},
+      "default_tools_approval_mode": "auto",
+      "tools": {
+        "studio_edit_draft": {"approval_mode": "prompt"},
+        "studio_publish_version": {"approval_mode": "prompt"},
+        "studio_create_suite": {"approval_mode": "prompt"},
+        "studio_create_test": {"approval_mode": "prompt"},
+        "studio_activate_test": {"approval_mode": "prompt"},
+        "studio_run_tests": {"approval_mode": "prompt"}
+      }
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "adereso-clients",
+  "interface": {
+    "displayName": "Adereso Clients"
+  },
+  "plugins": [
+    {
+      "name": "adereso-client",
+      "source": {
+        "source": "local",
+        "path": "./plugins/adereso-client"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

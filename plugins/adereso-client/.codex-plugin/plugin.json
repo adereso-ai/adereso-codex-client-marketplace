@@ -1,0 +1,23 @@
+{
+  "name": "adereso-client",
+  "version": "0.1.1",
+  "description": "Acceso autorizado a Desk y Studio desde Codex con una API key de Desk.",
+  "author": {
+    "name": "Adereso AI"
+  },
+  "homepage": "https://github.com/adereso-ai/adereso-codex-client-marketplace",
+  "repository": "https://github.com/adereso-ai/adereso-codex-client-marketplace",
+  "keywords": ["adereso", "desk", "studio", "mcp"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Adereso para clientes",
+    "shortDescription": "Tus tickets y bots de Adereso en Codex.",
+    "longDescription": "Conecta una API key de Desk habilitada para MCP. Codex recibe acceso al establishment de la key y a su organización Studio verificada, según los permisos configurados por tu administrador.",
+    "developerName": "Adereso AI",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": ["Use $adereso-client to list my authorized Desk tickets and Studio bots. Start with adereso_list_workspaces."],
+    "brandColor": "#166534"
+  },
+  "mcpServers": "./.mcp.json"
+}

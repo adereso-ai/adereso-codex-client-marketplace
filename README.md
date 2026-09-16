@@ -14,4 +14,6 @@ codex mcp login adereso
 
 Codex conecta al servicio MCP de clientes, separado del servicio interno, y abre una página OAuth con PKCE para ingresar la API key de Desk una vez. El MCP emite sus propias credenciales de sesión; la API key continúa sirviendo en Desk y no se guarda en el MCP. En la conversación, pide a Codex usar `$adereso-client` y consultar `adereso_list_workspaces` para conocer el `workspace_ref` autorizado.
 
+El endpoint de producción es `https://mcp.adereso.ai/mcp`. Quienes ya se conectaron al antiguo endpoint `run.app` deben actualizar el plugin y ejecutar nuevamente `codex mcp login adereso`; su API key de Desk sigue siendo válida.
+
 Una key rotada o revocada exige volver a conectar. El catálogo actual incluye lectura Desk, lectura/edición de borradores Studio, QA y publicación de versiones numeradas existentes según permisos. Crear bots y crear versiones numeradas aún requieren herramientas adicionales.

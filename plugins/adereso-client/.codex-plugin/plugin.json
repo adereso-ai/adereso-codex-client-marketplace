@@ -1,6 +1,6 @@
 {
   "name": "adereso-client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Acceso autorizado a Desk y Studio desde Codex con una API key de Desk.",
   "author": {
     "name": "Adereso AI"

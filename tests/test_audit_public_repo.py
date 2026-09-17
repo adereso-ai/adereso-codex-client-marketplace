@@ -222,6 +222,20 @@ class SecretAssignmentTests(unittest.TestCase):
             with self.subTest(fixture=fixture):
                 self.assertFalse(audit.scan_blob("fixture", fixture))
 
+    def test_does_not_treat_yaml_as_python_class_annotations(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"class Config:\n  " + key + b": Hunter2"
+        self.assertTrue(audit.scan_blob("fixture.yaml", fixture))
+
+    def test_does_not_exempt_python_string_fixture_as_annotation(self) -> None:
+        key = b"pass" + b"word"
+        fixture = (
+            b'fixture = """\nclass Config:\n    '
+            + key
+            + b': Hunter2\n"""'
+        )
+        self.assertTrue(audit.scan_blob("fixture.py", fixture))
+
     def test_detects_colon_getter_literal_fallback(self) -> None:
         key = b"pass" + b'word: os.getenv(PASSWORD_ENV, "hunter2")'
         self.assertTrue(audit.scan_blob("fixture", key))
@@ -302,6 +316,24 @@ class SecretAssignmentTests(unittest.TestCase):
         key = b"pass" + b'word: str = "hunter2"'
         self.assertTrue(audit.scan_blob("fixture", key))
 
+    def test_detects_quoted_forward_annotation_initializer(self) -> None:
+        key = b"pass" + b'word: "Pass' + b'word" = "hunter2"'
+        self.assertTrue(audit.scan_blob("fixture.py", key))
+
+    def test_allows_quoted_forward_annotation_runtime_initializer(self) -> None:
+        key = (
+            b"pass"
+            + b'word: "Pass'
+            + b'word" = os.environ["PASSWORD"]'
+        )
+        self.assertFalse(audit.scan_blob("fixture.py", key))
+
+    def test_detects_user_defined_python_annotation_initializer(self) -> None:
+        annotation = b"Pass" + b"word"
+        key = b"pass" + b"word: " + annotation + b' = "hunter2"'
+        fixture = b"class Config:\n    " + key
+        self.assertTrue(audit.scan_blob("fixture", fixture))
+
     def test_allows_type_only_sensitive_annotations(self) -> None:
         key = b"pass" + b"word"
         fixtures = (
@@ -316,10 +348,31 @@ class SecretAssignmentTests(unittest.TestCase):
             key + b": Optional[str]",
             key + b": str | None",
             key + b": SecretStr",
+            b"class Config:\n    " + key + b": Password",
+            b"class Config:\n    " + key + b": Password # runtime type",
+            b"class Config:\n    " + key + b": pydantic.SecretStr",
+            b"class Config:\n    " + key + b": str | Password",
+            b"class Config:\n    " + key + b": Password | bytes | None",
+            key + b": Password",
+            b"def configure():\n    " + key + b": Password",
+            key + b': "Password"',
+            b"def configure():\n    " + key + b": 'Password | None'",
+            key + b": password_type",
+            key + b': "password_type"',
         )
         for fixture in fixtures:
             with self.subTest(fixture=fixture):
-                self.assertFalse(audit.scan_blob("fixture", fixture))
+                label = (
+                    "fixture.ts"
+                    if fixture.startswith((b"function ", b"const ", b"interface "))
+                    else "fixture.py"
+                )
+                self.assertFalse(audit.scan_blob(label, fixture))
+
+    def test_allows_type_only_annotation_after_utf8_text(self) -> None:
+        key = b"pass" + b"word"
+        fixture = "é = 1; ".encode() + key + b": password_type"
+        self.assertFalse(audit.scan_blob("fixture.py", fixture))
 
     def test_detects_literal_getenv_fallback(self) -> None:
         key = b"pass" + b'word = os.getenv("PASSWORD", "'
@@ -354,6 +407,386 @@ class SecretAssignmentTests(unittest.TestCase):
         self.assertFalse(
             audit.scan_blob("fixture", b"FOO=bar " + key + b" command")
         )
+
+    def test_detects_command_line_credential_options(self) -> None:
+        key = b"pass" + b"word"
+        fixtures = (
+            b"mysql --" + key + b"=hunter2",
+            b"client --api-key hunter2",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture", fixture))
+
+    def test_detects_ansi_c_and_escaped_shell_cli_literals(self) -> None:
+        key = b"pass" + b"word"
+        fixtures = (
+            b"client --" + key + b"=$'hunter2'",
+            b"client --" + key + b" $'hunter2'",
+            b"client --" + key + b"=\\$hunter2",
+            b"client --" + key + b" \\${hunter2}",
+            b"client --" + key + b'="\\$hunter2"',
+            b"client --" + key + b" '$hunter2'",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture", fixture))
+
+    def test_allows_command_line_credential_reference(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"mysql --" + key + b" ${PASSWORD}"
+        self.assertFalse(audit.scan_blob("fixture", fixture))
+
+    def test_allows_shell_positional_credential_references(self) -> None:
+        key = b"pass" + b"word"
+        fixtures = (
+            b'client --' + key + b' "$1"',
+            b"client --" + key + b" ${2}",
+            b'client --' + key + b' "$@"',
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertFalse(audit.scan_blob("fixture.sh", fixture))
+
+    def test_allows_nondefaulting_shell_parameter_transformations(self) -> None:
+        key = b"pass" + b"word"
+        fixtures = (
+            b'client --' + key + b' "${PASSWORD#prefix}"',
+            b'client --' + key + b' "${PASSWORD##prefix*}"',
+            b'client --' + key + b' "${PASSWORD%suffix}"',
+            b'client --' + key + b' "${PASSWORD%%*suffix}"',
+            b'client --' + key + b' "${PASSWORD^}"',
+            b'client --' + key + b' "${PASSWORD^^}"',
+            b'client --' + key + b' "${PASSWORD,}"',
+            b'client --' + key + b' "${PASSWORD,,}"',
+            b'client --' + key + b' "${PASSWORD/-/}"',
+            b'client --' + key + b' "${PASSWORD//-/}"',
+            b'client --' + key + b' "${PASS' + b'WORD:1:5}"',
+            b'client --' + key + b' "${PASS' + b'WORD: -5:2}"',
+            b'client --' + key + b' "${PASS' + b'WORD@Q}"',
+            b'client --' + key + b' "${PASS' + b'WORD@U}"',
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertFalse(audit.scan_blob("fixture.sh", fixture))
+
+    def test_detects_shell_transform_syntax_in_nonshell_data(self) -> None:
+        key = b"pass" + b"word"
+        fixtures = (
+            b'{"' + key + b'":"${PASSWORD#hunter2}"}',
+            key + b": ${PASSWORD#hunter2}",
+            key + b": ${PASSWORD^^}",
+            key + b": ${PASS" + b"WORD:1:5}",
+            key + b": ${PASS" + b"WORD@Q}",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.yaml", fixture))
+
+    def test_detects_positional_shell_syntax_in_nonshell_data(self) -> None:
+        key = b"pass" + b"word"
+        fixtures = (
+            b'{"' + key + b'":"$1"}',
+            key + b": ${2}",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.yaml", fixture))
+
+    def test_detects_shell_parameter_default_literal(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b'client --' + key + b' "${PASS' + b'WORD:-hunter2}"'
+        self.assertTrue(audit.scan_blob("fixture.sh", fixture))
+
+    def test_detects_shell_replacement_with_literal(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b'client --' + key + b' "${PASSWORD//-/hunter2}"'
+        self.assertTrue(audit.scan_blob("fixture.sh", fixture))
+
+    def test_detects_escaped_shell_positional_literal(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"client --" + key + b" \\$1"
+        self.assertTrue(audit.scan_blob("fixture.sh", fixture))
+
+    def test_allows_command_line_password_manager_substitution(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"client --" + key + b' "$(pass show db)"'
+        self.assertFalse(audit.scan_blob("fixture", fixture))
+
+    def test_allows_command_line_environment_substitution(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"client --" + key + b' "$(printf %s ${PASSWORD})"'
+        self.assertFalse(audit.scan_blob("fixture", fixture))
+
+    def test_allows_printf_whitespace_formatting_around_reference(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"client --" + key + b' "$(printf \'%s\\n\' \"$PASSWORD\")"'
+        self.assertFalse(audit.scan_blob("fixture", fixture))
+
+    def test_allows_clustered_echo_flags_with_environment_reference(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"client --" + key + b' "$(echo -ne ${PASSWORD})"'
+        self.assertFalse(audit.scan_blob("fixture", fixture))
+
+    def test_detects_literal_command_substitution(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"client --" + key + b' "$(printf hunter2)"'
+        self.assertTrue(audit.scan_blob("fixture", fixture))
+
+    def test_allows_printf_assignment_substitution(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b'client --' + key + b' "$(printf -v output hunter2)"'
+        self.assertFalse(audit.scan_blob("fixture.sh", fixture))
+
+    def test_detects_nested_literal_command_substitution(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"client --" + key + b' "$(sh -c \'echo hunter2\')"'
+        self.assertTrue(audit.scan_blob("fixture", fixture))
+
+    def test_detects_literal_printf_format_in_command_substitution(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"client --" + key + b' "$(printf hunter2%s ${SUFFIX})"'
+        self.assertTrue(audit.scan_blob("fixture", fixture))
+
+    def test_detects_ansi_literal_inside_command_substitution(self) -> None:
+        key = b"pass" + b"word"
+        fixtures = (
+            b"client --" + key + b' "$(printf $\'hunter2\')"',
+            b"client --" + key + b' "$(printf \'$hunter2\')"',
+            b"client --" + key + b' "$(printf %s \\$hunter2)"',
+            b"client --" + key + b' "$(printf %s \\${hunter2})"',
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture", fixture))
+
+    def test_detects_option_looking_printf_output_argument(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"client --" + key + b' "$(printf %s -hunter2)"'
+        self.assertTrue(audit.scan_blob("fixture", fixture))
+
+    def test_detects_hyphen_prefixed_cli_credential(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"client --" + key + b' "-hunter2"'
+        self.assertTrue(audit.scan_blob("fixture", fixture))
+
+    def test_detects_concatenated_sensitive_cli_option_name(self) -> None:
+        fixtures = (
+            b'client --pass"word" hunter2',
+            b"client --pa\\ssword hunter2",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.sh", fixture))
+
+    def test_detects_ansi_c_quoted_sensitive_cli_option_name(self) -> None:
+        fixtures = (
+            b"client --pass$'word' hunter2",
+            b"client --pass$'w\\x6frd' hunter2",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.sh", fixture))
+
+    def test_detects_concatenated_sensitive_option_with_multiline_value(self) -> None:
+        fixture = b'client --pass"word" "hun\nter2"'
+        self.assertTrue(audit.scan_blob("fixture.sh", fixture))
+
+    def test_detects_backslash_newline_inside_sensitive_option_name(self) -> None:
+        fixture = b"client --passw\\\nord hunter2"
+        self.assertTrue(audit.scan_blob("fixture.sh", fixture))
+
+    def test_detects_bash_locale_quoted_cli_credential(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b'client --' + key + b'=$"hunter2"'
+        self.assertTrue(audit.scan_blob("fixture.sh", fixture))
+
+    def test_allows_reference_in_bash_locale_quotes(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b'client --' + key + b'=$"$PASSWORD"'
+        self.assertFalse(audit.scan_blob("fixture.sh", fixture))
+
+    def test_detects_static_text_in_bash_locale_quotes(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b'client --' + key + b'=$"$PASSWORD-hunter2"'
+        self.assertTrue(audit.scan_blob("fixture.sh", fixture))
+
+    def test_detects_static_suffix_after_shell_reference(self) -> None:
+        key = b"pass" + b"word"
+        fixtures = (
+            b'client --' + key + b'="$PASSWORD"hunter2',
+            b"client --" + key + b"=${PASSWORD}hunter2",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.sh", fixture))
+
+    def test_handles_empty_command_substitution(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"client --" + key + b' "$()"'
+        self.assertTrue(audit.scan_blob("fixture", fixture))
+
+    def test_detects_chained_secret_reader_command(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"client --" + key + b' "$(pass show db; echo hunter2)"'
+        self.assertTrue(audit.scan_blob("fixture", fixture))
+
+    def test_detects_credentials_in_shell_command_strings(self) -> None:
+        key = b"pass" + b"word"
+        fixtures = (
+            b"bash -c 'client --" + key + b" hunter2'",
+            b"sh -lc 'client --" + key + b" hunter2'",
+            b"eval 'client --" + key + b" hunter2'",
+            b"env bash -c 'client --" + key + b" hunter2'",
+            b"env -u TOKEN bash -c 'client --" + key + b" hunter2'",
+            b"env MODE=test -- sh -c 'client --" + key + b" hunter2'",
+            b'env -S "bash -c \'client --' + key + b' hunter2\'"',
+            b'env --split-string="bash -c \'client --'
+            + key
+            + b' hunter2\'"',
+            b"env -S 'bash\\_-c\\_\"client --" + key + b" hunter2\"'",
+            b"command bash -c 'client --" + key + b" hunter2'",
+            b"command -p bash -c 'client --" + key + b" hunter2'",
+            b"exec bash -c 'client --" + key + b" hunter2'",
+            b"exec -a worker bash -c 'client --" + key + b" hunter2'",
+            b"exec -cl bash -c 'client --" + key + b" hunter2'",
+            b"command env bash -c 'client --" + key + b" hunter2'",
+            b"exec env bash -c 'client --" + key + b" hunter2'",
+            b"sudo bash -c 'client --" + key + b" hunter2'",
+            b"sudo -u worker MODE=test bash -c 'client --" + key + b" hunter2'",
+            b"timeout 5 bash -c 'client --" + key + b" hunter2'",
+            b"timeout --signal TERM 5 env bash -c 'client --"
+            + key
+            + b" hunter2'",
+            b"bash -c -- 'client --" + key + b" hunter2'",
+            b"nice bash -c 'client --" + key + b" hunter2'",
+            b"nice -n 5 env bash -c 'client --" + key + b" hunter2'",
+            b"nohup bash -c 'client --" + key + b" hunter2'",
+            b"nohup -- bash -c 'client --" + key + b" hunter2'",
+            b"setsid bash -c 'client --" + key + b" hunter2'",
+            b"setsid -f -- bash -c 'client --" + key + b" hunter2'",
+            b"time bash -c 'client --" + key + b" hunter2'",
+            b"time -p -- bash -c 'client --" + key + b" hunter2'",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.sh", fixture))
+
+    def test_detects_continued_command_line_credential_option(self) -> None:
+        key = b"api-" + b"key"
+        fixture = b"client \\\n  --" + key + b" \\\n  hunter2"
+        self.assertTrue(audit.scan_blob("fixture", fixture))
+
+    def test_detects_multiline_quoted_command_substitution(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"client --" + key + b' "$(printf hunter2\n)"'
+        self.assertTrue(audit.scan_blob("fixture", fixture))
+
+    def test_detects_backslash_continued_quoted_cli_credential(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b'client --' + key + b' "hun\\\nter2"'
+        self.assertTrue(audit.scan_blob("fixture.sh", fixture))
+
+    def test_detects_unquoted_command_substitutions(self) -> None:
+        key = b"pass" + b"word"
+        fixtures = (
+            b"client --" + key + b" `echo hunter2`",
+            b"client --" + key + b" $(printf hunter2)",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture", fixture))
+
+    def test_allows_sensitive_option_documentation(self) -> None:
+        fixtures = (
+            b"The --pass" + b"word option is required",
+            b"Use the --api-" + b"key flag to authenticate",
+            b"Set --pass" + b"word to authenticate",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertFalse(audit.scan_blob("fixture.md", fixture))
+
+    def test_detects_capitalized_command_in_documentation(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"MyClient --" + key + b" hunter2"
+        self.assertTrue(audit.scan_blob("fixture.md", fixture))
+
+    def test_allows_grammatical_documentation_before_sensitive_option(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"The client accepts --" + key + b" values from stdin."
+        self.assertFalse(audit.scan_blob("fixture.md", fixture))
+
+    def test_allows_markdown_option_prose(self) -> None:
+        key = b"pass" + b"word"
+        fixtures = (
+            b"Use --" + key + b" carefully.",
+            b"- Set --" + key + b" carefully.",
+            b"You can use --" + key + b" carefully.",
+            b"Use the --" + key + b" option carefully.",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertFalse(audit.scan_blob("fixture.md", fixture))
+
+    def test_detects_same_option_value_outside_documentation(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"Use --" + key + b" carefully."
+        self.assertTrue(audit.scan_blob("fixture.sh", fixture))
+
+    def test_detects_markdown_command_after_intro(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"Run client --" + key + b" hunter2"
+        self.assertTrue(audit.scan_blob("fixture.md", fixture))
+
+    def test_detects_markdown_cli_subcommand(self) -> None:
+        key = b"pass" + b"word"
+        fixtures = (
+            b"client set --" + key + b" hunter2",
+            b"client add --" + key + b" hunter2",
+            b"client use --" + key + b" hunter2",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.md", fixture))
+
+    def test_allows_matching_cli_metavariables(self) -> None:
+        fixtures = (
+            b"Usage: client --password PASSWORD",
+            b"--api-key API_KEY",
+            b"--password <PASSWORD>",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertFalse(audit.scan_blob("fixture.md", fixture))
+
+    def test_detects_nonmatching_uppercase_cli_literal(self) -> None:
+        self.assertTrue(
+            audit.scan_blob("fixture.md", b"client --password HUNTER2")
+        )
+
+    def test_prose_apostrophe_does_not_hide_later_cli_credential(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"It's documented here\nclient --" + key + b" hunter2"
+        self.assertTrue(audit.scan_blob("fixture.md", fixture))
+
+    def test_sensitive_option_documentation_apostrophe_does_not_hide_command(
+        self,
+    ) -> None:
+        key = b"pass" + b"word"
+        fixture = (
+            b"The --"
+            + key
+            + b" option isn't supported\nclient --"
+            + key
+            + b" hunter2"
+        )
+        self.assertTrue(audit.scan_blob("fixture.md", fixture))
+
+    def test_markdown_hard_break_does_not_hide_later_cli_credential(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"It's documented here \\\nclient --" + key + b" hunter2"
+        self.assertTrue(audit.scan_blob("fixture.md", fixture))
 
     def test_detects_getenv_fallback_after_nonliteral_key(self) -> None:
         key = b"pass" + b'word = os.getenv(PASSWORD_ENV, "hunter2")'
@@ -430,6 +863,590 @@ class SecretAssignmentTests(unittest.TestCase):
         key = b'{"pass' + b'word":"'
         value = b'abc\\"' + b"defghijklmnopqrstuvwxyz" + b'"}'
         self.assertTrue(audit.scan_blob("fixture", key + value))
+
+    def test_detects_xml_element_credentials(self) -> None:
+        key = b"pass" + b"word"
+        fixtures = (
+            b"<" + key + b">hunter2</" + key + b">",
+            b"<settings><" + key + b">hunter2</" + key + b"></settings>",
+            b"<ns:" + key + b"><![CDATA[hunter2]]></ns:" + key + b">",
+            b"<" + key + b"><![CDATA[hunter2]]><!-- note --></" + key + b">",
+            b"<" + key + b"><![CDATA[<hunter2>]]></" + key + b">",
+            b"<api-" + b"key>hunter&#50;</api-key>",
+            b"<" + key + b' note=\">\">hunter2</' + key + b">",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture", fixture))
+
+    def test_detects_literal_after_nested_sensitive_xml_element(self) -> None:
+        key = b"pass" + b"word"
+        fixture = (
+            b"<"
+            + key
+            + b"><"
+            + key
+            + b">${PASSWORD}</"
+            + key
+            + b">hunter2</"
+            + key
+            + b">"
+        )
+        self.assertTrue(audit.scan_blob("fixture.xml", fixture))
+
+    def test_allows_xml_element_credential_reference(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"<" + key + b">${PASSWORD}</" + key + b">"
+        self.assertFalse(audit.scan_blob("fixture", fixture))
+
+    def test_allows_jsx_expression_credential_references(self) -> None:
+        key = b"Pass" + b"word"
+        fixtures = (
+            b"<" + key + b">{props.value}</" + key + b">",
+            b"<api-" + b"key>{process.env.API_KEY}</api-key>",
+            b"<" + key + b'>{process.env.PASSWORD || ""}</' + key + b">",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertFalse(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_does_not_apply_jsx_semantics_to_xml(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"<" + key + b">{hunter2}</" + key + b">"
+        self.assertTrue(audit.scan_blob("fixture.xml", fixture))
+
+    def test_detects_self_closing_xml_credential_attribute(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"<" + key + b' value="hunter2"/>'
+        self.assertTrue(audit.scan_blob("fixture.xml", fixture))
+
+    def test_detects_credential_designated_markup_value(self) -> None:
+        kind_value = b"pass" + b"word"
+        key_kind_value = b"api" + b"-key"
+        fixtures = (
+            b'<input type="' + kind_value + b'" value="hunter2">',
+            b'<property name="' + kind_value + b'" value="hunter2"/>',
+            b'<meta key="' + key_kind_value + b'" content="hunter2"/>',
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.xml", fixture))
+
+    def test_allows_credential_designated_markup_reference(self) -> None:
+        kind_value = b"pass" + b"word"
+        fixture = b'<input type="' + kind_value + b'" value="${PASSWORD}">'
+        self.assertFalse(audit.scan_blob("fixture.xml", fixture))
+
+    def test_allows_self_closing_xml_reference_attribute(self) -> None:
+        key = b"pass" + b"word"
+        fixture = b"<" + key + b' value="${PASSWORD}"/>'
+        self.assertFalse(audit.scan_blob("fixture.xml", fixture))
+
+    def test_detects_self_closing_jsx_expression_credential_attribute(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b' value={"hunter2"}/>'
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_comparison_attribute_credential(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = (
+            b"<"
+            + key
+            + b' value={count > 0 ? "hunter2" : process.env.PASSWORD}/>'
+        )
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_comment_brace_attribute_credential(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = (
+            b"<"
+            + key
+            + b' value={count /* } */ ? "hunter2" : process.env.PASSWORD}/>'
+        )
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_regex_brace_attribute_credential(self) -> None:
+        key = b"Pass" + b"word"
+        fixtures = (
+            b"<"
+            + key
+            + b' value={pattern.test(/}/) ? "hunter2" : process.env.PASSWORD}/>',
+            b"<"
+            + key
+            + b' value={pattern.test(/[}>]/) ? "hunter2" : process.env.PASSWORD}/>',
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_expression_valued_sensitive_jsx_attribute(self) -> None:
+        fixture = b'<Client apiKey={"hunter2"}/>'
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_allows_runtime_sensitive_jsx_attribute(self) -> None:
+        fixture = b"<Client apiKey={process.env.API_KEY}/>"
+        self.assertFalse(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_nested_jsx_attribute_template_credential(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b" value={`hunter2${suffix}`}/>"
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_greater_than_in_jsx_attribute_template(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b" value={`hun>ter2`}/>"
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_recognizes_regex_literal_after_jsx_arrow(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = (
+            b"<"
+            + key
+            + b' value={flag && (() => /}/.test(x) ? "hunter2" : '
+            + b"process.env.PASSWORD)()}/>"
+        )
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_recognizes_regex_literal_after_jsx_arithmetic_operator(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = (
+            b"<"
+            + key
+            + b' value={x + /}/.source ? "hunter2" : process.env.PASSWORD}/>'
+        )
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_spread_object_credential(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b' {...{value: "hunter2"}}/>'
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_spread_computed_value_key(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b' {...{["value"]: "hunter2"}}/>'
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_spread_template_value_key(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b' {...{[`value`]: "hunter2"}}/>'
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_commented_jsx_spread_value_key(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b' {...{value /* note */: "hunter2"}}/>'
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_ignores_comment_braces_in_jsx_spread_object(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = (
+            b"<"
+            + key
+            + b' {...{value: ok /* } */ ? "hunter2" : process.env.PASSWORD}}/>'
+        )
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_parenthesized_jsx_spread_object_credential(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b' {...(({value: "hunter2"}))}/>'
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_allows_jsx_spread_object_runtime_value(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b" {...{value: process.env.PASSWORD}}/>"
+        self.assertFalse(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_sensitive_key_in_generic_jsx_spread_object(self) -> None:
+        key = b"api" + b"Key"
+        fixture = b'<Client {...{["' + key + b'"]: "hunter2"}}/>'
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_folds_grouped_operands_in_computed_jsx_spread_key(self) -> None:
+        fixture = b'<Client {...{["api" + ("Key")]: "hunter2"}}/>'
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_unwraps_parenthesized_static_jsx_spread_key(self) -> None:
+        key = b"api" + b"Key"
+        fixture = b'<Client {...{[("' + key + b'")]: "hunter2"}}/>'
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_ignores_comment_commas_in_jsx_spread_keys(self) -> None:
+        key = b"api" + b"Key"
+        fixture = b'<Client {...{' + key + b' /* , */: "hunter2"}}/>'
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_ignores_comment_colons_in_jsx_spread_keys(self) -> None:
+        key = b"api" + b"Key"
+        fixture = b'<Client {...{' + key + b' /* : */: "hunter2"}}/>'
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_decodes_escaped_sensitive_jsx_spread_keys(self) -> None:
+        fixtures = (
+            b'<Client {...{"api\\u004bey": "hunter2"}}/>',
+            b'<Client {...{"api\\x4bey": "hunter2"}}/>',
+            b'<Client {...{"api\\Key": "hunter2"}}/>',
+            b'<Client {...{"api\\\nKey": "hunter2"}}/>',
+            b'<Client {...{"\\141piKey": "hunter2"}}/>',
+            b'<Client {...{["api" + "Key"]: "hunter2"}}/>',
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_folds_static_template_interpolation_in_jsx_spread_key(self) -> None:
+        fixture = b'<Client {...{[`api${"Key"}`]: "hunter2"}}/>'
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_folds_grouped_static_template_interpolation_in_jsx_key(self) -> None:
+        fixture = b'<Client {...{[`api${("Key")}`]: "hunter2"}}/>'
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_folds_static_concatenation_in_jsx_spread_key_template(self) -> None:
+        fixture = b'<Client {...{[`api${"K" + "ey"}`]: "hunter2"}}/>'
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_allows_nested_jsx_attribute_runtime_template(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b" value={`${process.env.PASSWORD}`}/>"
+        self.assertFalse(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_self_closing_jsx_default_value_credential(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b' defaultValue="hunter2"/>'
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_sensitive_jsx_component_suffixes(self) -> None:
+        fixtures = (
+            b'<PasswordInput value="hunter2"/>',
+            b'<SecretField value="hunter2"/>',
+            b'<ApiKeyField value="hunter2"/>',
+            b'<Form.PasswordInput value="hunter2"/>',
+            b'<password-input value="hunter2"/>',
+            b'<secret-field value="hunter2"/>',
+            b'<api-key-field value="hunter2"/>',
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_generic_sensitive_jsx_component_value(self) -> None:
+        fixtures = (
+            b'<Password<string> value="hunter2"/>',
+            b'<PasswordInput<Record<string, Value>> value="hunter2"/>',
+            b'<Password<(x: T) => U> value="hunter2"/>',
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_expression_designated_credential_value(self) -> None:
+        kind_value = b"pass" + b"word"
+        fixtures = (
+            b'<input type={"' + kind_value + b'"} value="hunter2"/>',
+            b'<input name={"' + kind_value + b'"} value="hunter2"/>',
+            b'<input {...{type: "' + kind_value + b'", value: "hunter2"}}/>',
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_allows_runtime_jsx_credential_designator(self) -> None:
+        fixture = b'<input type={fieldType} value="hunter2"/>'
+        self.assertFalse(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_self_closing_jsx_children_credential(self) -> None:
+        key = b"Pass" + b"word"
+        fixtures = (
+            b"<" + key + b' children="hunter2"/>',
+            b"<" + key + b" children={String(1234)}/>",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_allows_self_closing_jsx_runtime_attribute(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b" value={process.env.PASSWORD}/>"
+        self.assertFalse(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_literal_credential_expression(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b'>{"hunter2"}</' + key + b">"
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_angle_bracket_literal(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b'>{"<hunter2>"}</' + key + b">"
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_literal_credential_fallback(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = (
+            b"<" + key + b'>{process.env.PASSWORD || "hunter2"}</' + key + b">"
+        )
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_numeric_credential_fallback(self) -> None:
+        key = b"Pass" + b"word"
+        literals = (b"1234", b"0x1234", b"0b1010", b"0o755", b"1_234", b"1234n")
+        for literal in literals:
+            fixture = (
+                b"<"
+                + key
+                + b">{process.env.PASSWORD || "
+                + literal
+                + b"}</"
+                + key
+                + b">"
+            )
+            with self.subTest(literal=literal):
+                self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_direct_jsx_bigint_credential(self) -> None:
+        key = b"Pass" + b"word"
+        fixtures = (
+            b"<" + key + b" value={1234n}/>",
+            b"<" + key + b">{(0x1234n)}</" + key + b">",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_numeric_jsx_credential_before_typescript_assertion(self) -> None:
+        key = b"Pass" + b"word"
+        for assertion in (b"as const", b"satisfies number", b"as Password"):
+            fixture = (
+                b"<"
+                + key
+                + b" value={1234 "
+                + assertion
+                + b"}/>"
+            )
+            with self.subTest(assertion=assertion):
+                self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_numeric_credential_left_fallback(self) -> None:
+        key = b"Pass" + b"word"
+        for operator in (b"||", b"??"):
+            fixture = (
+                b"<"
+                + key
+                + b">{1234 "
+                + operator
+                + b" process.env.PASSWORD}</"
+                + key
+                + b">"
+            )
+            with self.subTest(operator=operator):
+                self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_falsy_numeric_left_operand_of_jsx_and(self) -> None:
+        key = b"Pass" + b"word"
+        for literal in (b"0", b"-0", b"0n", b"0x0", b"0.0"):
+            fixture = (
+                b"<"
+                + key
+                + b" value={"
+                + literal
+                + b" && runtime}/>"
+            )
+            with self.subTest(literal=literal):
+                self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_numeric_credential_in_composite_value(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b">{[runtime, 1234]}</" + key + b">"
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_terminal_numeric_jsx_sequence_operand(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b">{(runtime, 1234)}</" + key + b">"
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_numeric_credential_concatenation(self) -> None:
+        key = b"Pass" + b"word"
+        fixtures = (
+            b"<" + key + b">{process.env.PASSWORD + 1234}</" + key + b">",
+            b"<" + key + b">{0x1234 + process.env.PASSWORD}</" + key + b">",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_numeric_credential_logical_branch(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b">{enabled && 1234}</" + key + b">"
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_commented_jsx_numeric_credential_branch(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = (
+            b"<"
+            + key
+            + b">{enabled && /* credential */ 1234}</"
+            + key
+            + b">"
+        )
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_parenthesized_jsx_numeric_credential_branch(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b">{enabled && ((1234))}</" + key + b">"
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_allows_numeric_runtime_call_argument_in_jsx(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b">{getPassword(0)}</" + key + b">"
+        self.assertFalse(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_static_numeric_coercion_in_jsx(self) -> None:
+        key = b"Pass" + b"word"
+        for coercer in (b"String", b"Number", b"BigInt"):
+            fixture = b"<" + key + b">{" + coercer + b"(1234)}</" + key + b">"
+            with self.subTest(coercer=coercer):
+                self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_static_numeric_coercion_in_compound_jsx(self) -> None:
+        key = b"Pass" + b"word"
+        fixtures = (
+            b"<" + key + b">{enabled && String(1234)}</" + key + b">",
+            b"<" + key + b" value={enabled && Number(1234)}/>",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_numeric_method_coercion_in_jsx(self) -> None:
+        key = b"Pass" + b"word"
+        fixtures = (
+            b"<" + key + b">{(1234).toString()}</" + key + b">",
+            b"<" + key + b" value={enabled && (1234).toFixed(0)}/>",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_allows_jsx_runtime_selector_strings(self) -> None:
+        key = b"Pass" + b"word"
+        fixtures = (
+            b"<" + key + b'>{config["PASSWORD"]}</' + key + b">",
+            b"<" + key + b'>{getConfig("PASSWORD")}</' + key + b">",
+            b"<" + key + b'>{config?.["PASSWORD"]}</' + key + b">",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertFalse(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_allows_compound_jsx_computed_selector(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = (
+            b"<"
+            + key
+            + b'>{config["PASSWORD"] || ""}</'
+            + key
+            + b">"
+        )
+        self.assertFalse(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_allows_compound_jsx_selector_call(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = (
+            b"<"
+            + key
+            + b'>{getConfig("PASSWORD") || ""}</'
+            + key
+            + b">"
+        )
+        self.assertFalse(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_literal_fallback_after_jsx_computed_selector(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = (
+            b"<"
+            + key
+            + b'>{config["PASSWORD"] || "hunter2"}</'
+            + key
+            + b">"
+        )
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_array_literal_value(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b'>{enabled && ["hunter2"]}</' + key + b">"
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_runtime_selector_literal_fallback(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = (
+            b"<"
+            + key
+            + b'>{getConfig("PASSWORD", "hunter2")}</'
+            + key
+            + b">"
+        )
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_allows_jsx_runtime_template_expression(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = (
+            b"<" + key + b">{`${process.env.PASSWORD}`}</" + key + b">"
+        )
+        self.assertFalse(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_allows_jsx_compound_runtime_template_expression(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = (
+            b"<"
+            + key
+            + b">{`${process.env.PASSWORD || \"\"}`}</"
+            + key
+            + b">"
+        )
+        self.assertFalse(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_allows_regex_brace_in_jsx_template_interpolation(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = (
+            b"<"
+            + key
+            + b'>{`${/}/.test(x) ? process.env.PASSWORD : ""}`}</'
+            + key
+            + b">"
+        )
+        self.assertFalse(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_allows_jsx_nested_object_template_interpolation(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = (
+            b"<"
+            + key
+            + b">{`${getPassword({ user })}`}</"
+            + key
+            + b">"
+        )
+        self.assertFalse(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_allows_jsx_nested_template_interpolation(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = (
+            b"<"
+            + key
+            + b">{`${condition ? `${process.env.PASSWORD}` : \"\"}`}</"
+            + key
+            + b">"
+        )
+        self.assertFalse(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_template_static_credential_text(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = (
+            b"<" + key + b">{`hunter2${process.env.SUFFIX}`}</" + key + b">"
+        )
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
+
+    def test_detects_jsx_template_literal_inside_interpolation(self) -> None:
+        key = b"Pass" + b"word"
+        fixture = b"<" + key + b">{`${\"hunter2\"}`}</" + key + b">"
+        self.assertTrue(audit.scan_blob("fixture.tsx", fixture))
 
     def test_detects_yaml_block_scalar_secret(self) -> None:
         for marker in (b">-", b"|", b"|2-"):
@@ -1003,6 +2020,11 @@ class SecretAssignmentTests(unittest.TestCase):
         fixture = b"kind: Secret\nstringData:\n  password: " + expression
         self.assertTrue(audit.scan_blob("fixture", fixture))
 
+    def test_detects_multiline_helm_output_argument(self) -> None:
+        expression = b"{{" + b' printf "%s"\n    "c2VjcmV0" }}'
+        fixture = b"kind: Secret\ndata:\n  auth: " + expression
+        self.assertTrue(audit.scan_blob("fixture", fixture))
+
     def test_detects_literal_only_helm_printf_format(self) -> None:
         expression = b"{{" + b' printf "hunter2" }}'
         fixture = b"kind: Secret\nstringData:\n  password: " + expression
@@ -1307,6 +2329,38 @@ class SecretAssignmentTests(unittest.TestCase):
 
 
 class HistoryPathTests(unittest.TestCase):
+    def test_path_classification_preserves_at_characters(self) -> None:
+        path = "a/@scope/view.tsx"
+        self.assertEqual(audit.path_from_label(path), path)
+        self.assertTrue(audit.label_allows_jsx(path))
+        self.assertTrue(
+            audit.label_allows_jsx(f"history:{path}@0123456789ab")
+        )
+
+    def test_history_cache_distinguishes_python_and_yaml_paths(self) -> None:
+        self.assertNotEqual(
+            ("blob", audit.label_allows_python_annotations("a.py")),
+            ("blob", audit.label_allows_python_annotations("z.yaml")),
+        )
+
+    def test_history_cache_distinguishes_jsx_and_xml_paths(self) -> None:
+        self.assertNotEqual(
+            ("blob", audit.label_allows_jsx("a.tsx")),
+            ("blob", audit.label_allows_jsx("z.xml")),
+        )
+
+    def test_history_cache_distinguishes_documentation_and_shell_paths(self) -> None:
+        self.assertNotEqual(
+            ("blob", audit.label_allows_documentation_prose("README.md")),
+            ("blob", audit.label_allows_documentation_prose("script.sh")),
+        )
+
+    def test_history_cache_distinguishes_shell_and_yaml_paths(self) -> None:
+        self.assertNotEqual(
+            ("blob", audit.label_uses_shell_syntax("a.sh")),
+            ("blob", audit.label_uses_shell_syntax("z.yaml")),
+        )
+
     def test_reads_symlink_itself_instead_of_target(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

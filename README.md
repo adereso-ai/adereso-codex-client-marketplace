@@ -8,12 +8,13 @@ Este repositorio contiene solamente la configuración pública del plugin, su sk
 
 Según los permisos asociados a la API key de Desk, Codex puede:
 
-- listar el workspace autorizado y sus capacidades;
+- consultar los permisos y recursos autorizados;
 - leer tickets, mensajes y eventos de Desk;
 - buscar tickets por el identificador de país del contacto;
 - listar y consultar bots de Studio;
 - editar borradores de bots;
 - crear, activar y ejecutar pruebas de QA;
+- crear una versión numerada a partir de un borrador revisado, sin publicarla;
 - publicar una versión numerada existente.
 
 Las herramientas disponibles se calculan para cada conexión. Una cuenta con permisos de lectura no recibe herramientas de escritura.
@@ -45,18 +46,26 @@ Abre una conversación nueva después de instalar o actualizar el plugin, para q
 
 Puedes comenzar con:
 
-> Usa `$adereso-client` para listar mis workspaces autorizados y los bots de Studio disponibles.
+> Usa `$adereso-client` para mostrar mis permisos y listar los bots de Studio a los que tengo acceso.
 
-Codex llamará primero a `adereso_list_workspaces`. Esa herramienta devuelve el `workspace_ref` opaco y las capacidades efectivas de la conexión. Las demás herramientas exigen ese valor; no se debe inferir desde nombres de clientes, bots o tickets.
+Codex consulta `adereso_get_permissions` para conocer las capacidades de la conexión. Después usa `studio_list_organizations` o `desk_list_establishments` para obtener los recursos autorizados. Las herramientas de Studio reciben el `organization_id` devuelto por su directorio; las de Desk, el `establishment_id` del suyo. No hay que inventar esos IDs a partir de nombres de bots, clientes o tickets.
 
 Ejemplos:
 
 - “Busca los tickets recientes de este contacto y resume el problema.”
 - “Lista los bots disponibles y explícame qué hace el bot de soporte.”
-- “Agrega este caso al suite de QA y ejecuta las pruebas.”
-- “Actualiza el borrador del bot con este comportamiento.”
+- “Propón cómo actualizar el borrador de este bot, pero no hagas cambios todavía.”
+- “Agrega este caso a QA, revisa si se puede ejecutar y prueba el borrador sin efectos externos.”
+- “Crea una versión numerada del borrador revisado, pero no la publiques.”
 
-Codex solicita confirmación antes de las herramientas que escriben o publican cambios.
+## Editar y probar un bot
+
+1. Pide a Codex que liste los bots autorizados y lea la configuración del borrador. Revisa con él el cambio propuesto antes de guardarlo.
+2. Si autorizas la edición, Codex aplica los cambios al **borrador**. Esto no cambia el bot que atiende conversaciones en vivo.
+3. Revisa los casos de QA, ejecuta las pruebas pertinentes sobre el borrador y examina el resultado. Las pruebas bloquean los efectos externos; un resultado con integraciones simuladas no confirma que funcionen en producción.
+4. Cuando el borrador esté revisado, puedes pedir una versión numerada. Se crea sin tráfico. **Publicarla es una acción posterior y separada** que debes autorizar expresamente.
+
+Cada paso depende de los permisos concedidos por el administrador. Pide a Codex que te muestre el resultado de cada cambio y prueba antes de continuar.
 
 ## Alcance de los permisos
 
@@ -69,7 +78,7 @@ La API key determina dos ámbitos independientes:
 
 Una key puede tener lectura en Desk sin acceso a Studio, o lectura en ambos productos sin permiso para editar bots. El servicio vuelve a evaluar la autorización; rotar o revocar la key, deshabilitar MCP o cambiar sus capacidades afecta las conexiones asociadas.
 
-El plugin no ofrece acceso a otros establishments ni organizaciones mediante IDs enviados por el cliente. El servidor vincula cada `workspace_ref` con el alcance validado de la key.
+El servidor comprueba que el `establishment_id` u `organization_id` enviado corresponda al alcance validado de la key. Enviar otro ID no concede acceso a recursos ajenos.
 
 ## Cómo funciona la autenticación
 
@@ -89,6 +98,7 @@ codex mcp login adereso
 Vuelve a instalar el plugin desde el marketplace y abre una conversación nueva:
 
 ```bash
+codex plugin marketplace upgrade adereso-clients
 codex plugin add adereso-client@adereso-clients
 ```
 
@@ -116,5 +126,4 @@ Este repositorio se audita en cada cambio para impedir credenciales y archivos d
 
 ## Estado del catálogo
 
-El catálogo actual permite lectura de Desk y lectura, edición de borradores, QA y publicación de versiones numeradas existentes en Studio, siempre según permisos. La creación de bots y de versiones numeradas todavía no forma parte del catálogo público.
-
+El catálogo actual permite lectura de Desk y lectura, edición de borradores, QA, creación de versiones numeradas sin tráfico y publicación separada de versiones existentes en Studio, siempre según permisos. La creación de bots todavía no forma parte del catálogo público.

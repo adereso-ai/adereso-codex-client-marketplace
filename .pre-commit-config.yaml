@@ -1,0 +1,15 @@
+# Install pre-commit: https://pre-commit.com/#install
+# Enable once per clone: pre-commit install --install-hooks
+# Check staged changes: pre-commit run gitleaks
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        # Git passes these settings to Gitleaks' child Git process.
+        # Forced color otherwise makes upstream's staged-diff parser miss secrets.
+        entry: >-
+          git -c color.ui=false -c color.diff=false
+          -c alias.gitleaks-scan=!gitleaks
+          gitleaks-scan git --pre-commit --redact --staged --verbose

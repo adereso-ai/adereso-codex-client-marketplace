@@ -1,6 +1,6 @@
 {
   "name": "adereso-client",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Acceso autorizado a Desk y Studio desde Codex con una API key de Desk.",
   "author": {
     "name": "Adereso AI"
@@ -16,7 +16,7 @@
     "developerName": "Adereso AI",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
-    "defaultPrompt": ["Use $adereso-client to list my authorized Desk tickets and Studio bots. Start with adereso_list_workspaces."],
+    "defaultPrompt": ["Use $adereso-client to show my permissions and list my authorized Desk tickets and Studio bots. Start with adereso_get_permissions, then list the Desk establishments or Studio organizations I can access."],
     "brandColor": "#166534"
   },
   "mcpServers": "./.mcp.json"
